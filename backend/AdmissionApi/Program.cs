@@ -1,4 +1,5 @@
 using AdmissionApi.Data;
+using AdmissionApi.Endpoints;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -37,6 +38,8 @@ app.MapGet("/health", () => Results.Json(new
     service = "admission-api",
     time = DateTime.UtcNow
 }));
+
+app.MapClassEndpoints();
 
 app.Run();
 
