@@ -40,6 +40,7 @@ app.MapGet("/health", () => Results.Json(new
 }));
 
 app.MapClassEndpoints();
+app.MapHoldEndpoints();
 
 app.Run();
 
