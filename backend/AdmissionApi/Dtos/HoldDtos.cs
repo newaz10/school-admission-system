@@ -14,3 +14,11 @@ public sealed record HoldDetailsResponse(
     string ClassId,
     string Status,
     DateTime ExpiresAt);
+
+// 200 response of GET /me/holds
+public sealed record MyHoldResponse(
+    string HoldId,
+    string ClassId,
+    string ClassName,
+    string Status,
+    DateTime ExpiresAt);
