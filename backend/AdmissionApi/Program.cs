@@ -20,6 +20,14 @@ builder.Services.AddDbContext<AdmissionDbContext>(options =>
 
 var app = builder.Build();
 
+// Apply pending migrations at startup so the schema always matches the code,
+// including right after "docker compose down" + "docker compose up".
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AdmissionDbContext>();
+    db.Database.Migrate();
+}
+
 app.UseCors();
 
 // Simple liveness endpoint used by Docker health checks and by us to verify the API is up.
