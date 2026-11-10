@@ -1,4 +1,5 @@
-// Entry point of the School Admission System API.
+using AdmissionApi.Data;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +12,11 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader()
               .AllowAnyMethod());
 });
+
+// PostgreSQL via EF Core. The connection string comes from configuration,
+// so an environment variable (ConnectionStrings__AdmissionDb) can override it.
+builder.Services.AddDbContext<AdmissionDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("AdmissionDb")));
 
 var app = builder.Build();
 
