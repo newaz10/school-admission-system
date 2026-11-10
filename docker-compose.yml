@@ -15,6 +15,19 @@ services:
       timeout: 3s
       retries: 15
 
-# backend and frontend services are added in later commits
+  backend:
+    build: ./backend
+    environment:
+      # Connection string is injected via environment variable (assignment requirement).
+      # The API will start using it in the next step (EF Core).
+      ConnectionStrings__AdmissionDb: "Host=db;Port=5432;Database=admission;Username=admission;Password=admission"
+      HOLD_DURATION_SECONDS: "600"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+# The frontend service will be added later
 volumes:
   pgdata:
