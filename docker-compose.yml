@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: admission
+      POSTGRES_PASSWORD: admission
+      POSTGRES_DB: admission
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admission -d admission"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+# backend and frontend services are added in later commits
+volumes:
+  pgdata:
