@@ -7,10 +7,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AdmissionApi.Endpoints;
 
-// Endpoints for creating seat holds and checking their status.
 public static class HoldEndpoints
 {
-    // Spec requires exactly 17 digits for the student ID
     private static readonly Regex StudentIdRegex = new(@"^\d{17}$", RegexOptions.Compiled);
 
     public static void MapHoldEndpoints(this WebApplication app)
@@ -22,7 +20,6 @@ public static class HoldEndpoints
             AdmissionDbContext db,
             IConfiguration config) =>
         {
-            // 1. Validate student ID header
             var studentId = http.Request.Headers["X-Student-Id"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId))
             {
@@ -31,15 +28,11 @@ public static class HoldEndpoints
                     statusCode: 400);
             }
 
-            // 2. Read hold duration from environment variable (default 600 seconds)
             var durationSeconds = config.GetValue<int>("HOLD_DURATION_SECONDS", 600);
             if (durationSeconds <= 0) durationSeconds = 600;
 
-            // 3. Start a database transaction for safe concurrency
             await using var transaction = await db.Database.BeginTransactionAsync();
 
-            // 4. LOCK the class row. This forces concurrent requests to wait in line,
-            // preventing the "overselling seats" race condition.
             var lockedClass = await db.Classes
                 .FromSqlRaw("SELECT \"Id\", \"Name\", \"TotalSeats\", \"CreatedAt\" FROM classes WHERE \"Id\" = {0} FOR UPDATE", classId)
                 .FirstOrDefaultAsync();
@@ -51,7 +44,6 @@ public static class HoldEndpoints
 
             var now = DateTime.UtcNow;
 
-            // 5. Check if this student already has an active application for this class
             var hasActiveApplication = await db.Holds.AnyAsync(h =>
                 h.ClassId == classId &&
                 h.StudentId == studentId &&
@@ -65,20 +57,17 @@ public static class HoldEndpoints
                     statusCode: 409);
             }
 
-            // 6. Count currently occupied seats (unexpired holds + confirmed)
             var heldCount = await db.Holds.CountAsync(h =>
                 h.ClassId == classId && h.Status == HoldStatus.HELD && h.ExpiresAt > now);
             
             var confirmedCount = await db.Holds.CountAsync(h =>
                 h.ClassId == classId && h.Status == HoldStatus.CONFIRMED);
 
-            // 7. Check capacity
             if (heldCount + confirmedCount >= lockedClass.TotalSeats)
             {
                 return Results.Json(new ApiError("No seats available."), statusCode: 409);
             }
 
-            // 8. Create the hold
             var hold = new Hold
             {
                 Id = "h_" + Guid.NewGuid().ToString("N"),
@@ -110,7 +99,6 @@ public static class HoldEndpoints
                 return Results.Json(new ApiError("Hold not found."), statusCode: 404);
             }
 
-            // Calculate "effective" status (HELD becomes EXPIRED if time has passed)
             var effectiveStatus = hold.Status;
             if (hold.Status == HoldStatus.HELD && hold.ExpiresAt <= DateTime.UtcNow)
             {
@@ -122,6 +110,109 @@ public static class HoldEndpoints
                 hold.ClassId,
                 effectiveStatus.ToString(),
                 hold.ExpiresAt));
+        });
+
+        // 6) POST /holds/{holdId}/confirm - pay fee and confirm admission
+        app.MapPost("/holds/{holdId}/confirm", async (
+            string holdId,
+            HttpContext http,
+            AdmissionDbContext db) =>
+        {
+            var studentId = http.Request.Headers["X-Student-Id"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId))
+            {
+                return Results.Json(
+                    new ApiError("X-Student-Id header is required and must be exactly 17 digits."), 
+                    statusCode: 400);
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync();
+
+            var hold = await db.Holds
+                .FromSqlRaw("SELECT \"Id\", \"ClassId\", \"StudentId\", \"Status\", \"ExpiresAt\", \"CreatedAt\", \"ConfirmedAt\" FROM holds WHERE \"Id\" = {0} FOR UPDATE", holdId)
+                .FirstOrDefaultAsync();
+
+            if (hold == null)
+            {
+                return Results.Json(new ApiError("Hold not found."), statusCode: 404);
+            }
+
+            if (hold.StudentId != studentId)
+            {
+                return Results.Json(new ApiError("You can only confirm your own holds."), statusCode: 403);
+            }
+
+            var now = DateTime.UtcNow;
+
+            // Idempotency: if already confirmed, just return success
+            if (hold.Status == HoldStatus.CONFIRMED)
+            {
+                await transaction.CommitAsync();
+                return Results.Json(new { holdId = hold.Id, status = HoldStatus.CONFIRMED.ToString() });
+            }
+
+            if (hold.Status != HoldStatus.HELD || hold.ExpiresAt <= now)
+            {
+                return Results.Json(new ApiError("This hold has expired or is no longer active."), statusCode: 400);
+            }
+
+            hold.Status = HoldStatus.CONFIRMED;
+            hold.ConfirmedAt = now;
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            return Results.Json(new { holdId = hold.Id, status = HoldStatus.CONFIRMED.ToString() });
+        });
+
+        // 7) DELETE /holds/{holdId} - cancel application
+        app.MapDelete("/holds/{holdId}", async (
+            string holdId,
+            HttpContext http,
+            AdmissionDbContext db) =>
+        {
+            var studentId = http.Request.Headers["X-Student-Id"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId))
+            {
+                return Results.Json(
+                    new ApiError("X-Student-Id header is required and must be exactly 17 digits."), 
+                    statusCode: 400);
+            }
+
+            await using var transaction = await db.Database.BeginTransactionAsync();
+
+            var hold = await db.Holds
+                .FromSqlRaw("SELECT \"Id\", \"ClassId\", \"StudentId\", \"Status\", \"ExpiresAt\", \"CreatedAt\", \"ConfirmedAt\" FROM holds WHERE \"Id\" = {0} FOR UPDATE", holdId)
+                .FirstOrDefaultAsync();
+
+            if (hold == null)
+            {
+                return Results.Json(new ApiError("Hold not found."), statusCode: 404);
+            }
+
+            if (hold.StudentId != studentId)
+            {
+                return Results.Json(new ApiError("You can only cancel your own holds."), statusCode: 403);
+            }
+
+            var now = DateTime.UtcNow;
+
+            // Idempotency: if already cancelled, just return 204
+            if (hold.Status == HoldStatus.CANCELLED)
+            {
+                await transaction.CommitAsync();
+                return Results.NoContent();
+            }
+
+            if (hold.Status != HoldStatus.HELD || hold.ExpiresAt <= now)
+            {
+                return Results.Json(new ApiError("Only active, unexpired holds can be cancelled."), statusCode: 400);
+            }
+
+            hold.Status = HoldStatus.CANCELLED;
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            return Results.NoContent();
         });
     }
 }
